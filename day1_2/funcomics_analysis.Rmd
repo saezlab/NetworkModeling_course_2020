@@ -1,0 +1,474 @@
+---
+title: "Introduction to GDSC data"
+author: "Ricardo Ramirez"
+date: "1/14/2020"
+output: html_document
+---
+
+# Introduction
+
+Here we will work with a reduced dataset coming from the Genomics of Drug Sensitivity in Cancer panel from Sanger Institute.
+
+In this notebook we will apply some basic transcriptomics analysis, functional genomics and network biology concepts to answer questions around drug sensitivity in colon cancer.
+
+#### First make sure to install all required dependencies
+
+```{r setup, include=TRUE, message=FALSE,warning=F}
+# If not installed, follow:
+# install.packages("package")
+library(tidyr)
+library(dplyr)
+library(purrr)
+library(curl)
+library(devtools)
+library(ggplot2)
+# From Bioconductor
+# If not installed, follow:
+# BiocManager::install("package")
+library(viper)
+library(progeny)
+library(fgsea)
+library(OmnipathR)
+
+# To install, please be sure to have either cbc or cplex installed:
+# install_github('saezlab/CARNIVAL-Bioconductor-Dev', 
+#               build_vignettes = FALSE)
+library(CARNIVAL)
+```
+
+#### Then load all datasets needed for this practical
+
+```{r}
+colon_cells = readRDS("data/colon_cells.rds")
+colon_IC50s = readRDS(file = "data/colon_IC50s.rds")
+colon_gex = readRDS(file = "data/colon_gex.rds")
+load("data/TEDDY_geneSets.ro")
+
+hmarks_gsets = TEDDY_geneSets$MSIGDB_HMARKS
+```
+
+1) After what you heard of this dataset, what type of questions could be solved and why network biology + systems biology is useful here? 
+
+# Gene analysis / Gene set enrichment analysis
+
+1) Get one drug to test for responses
+
+```{r}
+# Here I choose one drug ("1017") and one panel of drug sensitivity (GDSC1 or GDSC2)
+olaparib_IC50s =  colon_IC50s %>% dplyr::filter(DRUG_ID == 1017,
+                                                COSMIC_ID %in% colon_cells$COSMIC_ID,
+                                                DATASET == "GDSC1")
+# Here I filter my cell table to contain only cell lines that were treated with my selected drug
+olaparib_cells = colon_cells %>% dplyr::filter(COSMIC_ID %in% olaparib_IC50s$COSMIC_ID)
+# Here I add the IDs from my expression matrix to my drug response data
+olaparib_IC50s = left_join(olaparib_IC50s, olaparib_cells[,c("DepMap_ID", "COSMIC_ID")])
+# Modifying IC50s for analysis
+olaparib_IC50s = olaparib_IC50s %>% dplyr::mutate(logIC50 = log(IC50_PUBLISHED,2))
+# Same order of IC50s and gene expression
+colon_gex_filtered = colon_gex[,olaparib_IC50s$DepMap_ID]
+# Filter genes that have more than 50% of data == 0 
+good_rows = rowSums(colon_gex_filtered == 0) < 
+            (ncol(colon_gex_filtered))/2
+# Final GEX matrix
+colon_gex_filtered = colon_gex_filtered[good_rows,]
+
+genes = rownames(colon_gex_filtered)
+
+# Here we perform a linear model of DrugResponse~GeneExpression
+# Remember that this is an example and many assumptions have to be
+# done to the data!! Don't forget your stats course :-)
+
+lm_summary = data.frame(t(sapply(genes,function(gene){
+       modelDF = tibble("Expression" = colon_gex_filtered[gene,],
+                        "Response" = olaparib_IC50s$logIC50)
+       
+       lmres = lm(Response~Expression,data = modelDF)
+       lmres = summary(lmres)$coefficients[2,c(3,4)]
+       names(lmres) = c("t","p_value")
+       
+       return(lmres)
+})))
+
+lm_summary = lm_summary %>% 
+             mutate("gene" = rownames(lm_summary),
+                    "adj_pval" = p.adjust(p_value,"BH")) %>%
+             arrange(desc(t))
+
+dim(lm_summary)
+
+head(lm_summary)
+```
+
+2) OK we can make plots just to understand what's happening
+
+- A positive slope would represent that the expression of the genes contribute to resistance
+
+```{r}
+plot(colon_gex_filtered["ARRDC1",],
+     olaparib_IC50s$logIC50)
+```
+
+```{r}
+plot(lm_summary[,"t"],
+     -log10(lm_summary[,"adj_pval"]))
+```
+
+
+3) What if we wanted to know which processes are involved in resistance?
+
+```{r}
+# Overrepresentation analysis for homework ;)
+# Look for hypergeometric tests
+
+# Let's apply GSEA
+
+t_vals = lm_summary$t
+names(t_vals) = lm_summary$gene
+
+enrichment_res = fgsea(hmarks_gsets, 
+                       stats = t_vals,
+                       nperm = 1000)
+
+# Let's look at the results
+
+enrichment_res = data.frame(enrichment_res) %>%
+                 arrange(desc(abs(NES)))
+
+enrichment_res_filtered = enrichment_res %>%
+                          dplyr::filter(pval<0.05)
+
+enrichment_res_filtered[1:5,-8]
+```
+
+# TF activities
+
+1) How can we use a regulatory network to infer TF activities?
+2) How to infer regulatory networks?
+
+```{r}
+## Function to group Dorothea regulons. 
+## Input: A data frame containing Dorothea regulons, as stored in 
+## https://github.com/saezlab/ConservedFootprints/tree/master/data
+## Output: Object of class regulon. See viper package.
+df2regulon = function(df) {
+    regulon = df %>%
+        split(.$tf) %>%
+        map(function(dat) {
+            tf = dat %>% distinct(tf) %>% pull()
+            targets = setNames(dat$mor, dat$target)
+            likelihood = dat$likelihood
+            list(tfmode =targets, likelihood = likelihood)
+        })
+    return(regulon)
+}
+```
+
+```{r}
+## We read Dorothea Regulons for Human:
+dorothea_regulon_human = read.csv("https://raw.githubusercontent.com/saezlab/ConservedFootprints/master/data/dorothea_benchmark/regulons/dorothea_regulon_human_v1.csv",
+                                  stringsAsFactors = F)
+
+## We obtain the regulons based on interactions with confidence level A, B and C
+regulon = dorothea_regulon_human %>%
+    dplyr::filter(confidence %in% c("A","B","C")) %>%
+    df2regulon()
+
+regulon[[1]]
+```
+
+#### Getting TF activities and associations with drug response
+
+```{r}
+
+# Running viper
+colon_tfs = viper(eset = colon_gex_filtered,
+                  regulon = regulon,
+                  verbose = F)
+dim(colon_tfs)
+colon_tfs[1:5,1:5]
+
+tfs = rownames(colon_tfs)
+
+#Running linear models
+tfs_lm_summary = data.frame(t(sapply(tfs,function(tf){
+       modelDF = tibble("Expression" = colon_tfs[tf,],
+                        "Response" = olaparib_IC50s$logIC50)
+       
+       lmres = lm(Response~Expression,data = modelDF)
+       lmres = summary(lmres)$coefficients[2,c(3,4)]
+       names(lmres) = c("t","p_value")
+       
+       return(lmres)
+})))
+
+tfs_lm_summary = tfs_lm_summary %>% 
+                 mutate("TF" = rownames(tfs_lm_summary),
+                        "adj_pval" = p.adjust(p_value,"BH")) %>%
+                 
+                 arrange(desc(t)) %>%
+                 dplyr::filter(p_value<0.05)
+
+dim(tfs_lm_summary)
+
+head(tfs_lm_summary)
+```
+
+```{r}
+plot(colon_tfs["KLF5",],
+     olaparib_IC50s$logIC50)
+```
+
+
+```{r}
+plot(colon_tfs["KLF6",],
+     olaparib_IC50s$logIC50)
+```
+
+
+```{r}
+plot(colon_tfs["SNAI2",],
+     olaparib_IC50s$logIC50)
+```
+
+```{r}
+plot(colon_tfs["BCL3",],
+     olaparib_IC50s$logIC50)
+```
+
+
+# PROGENy
+
+1) What's the difference between this approach and GSEA?
+
+#### Here we first calculate pathway activities and then we associate them with drug response
+
+```{r}
+progeny_colon = t(progeny(expr = colon_gex_filtered))
+progeny_colon[1:5,1:5]
+
+pathways = rownames(progeny_colon)
+
+path_lm_summary = data.frame(t(sapply(pathways,function(pathway){
+       modelDF = tibble("Expression" = progeny_colon[pathway,],
+                        "Response" = olaparib_IC50s$logIC50)
+       
+       lmres = lm(Response~Expression,data = modelDF)
+       lmres = summary(lmres)$coefficients[2,c(3,4)]
+       names(lmres) = c("t","p_value")
+       
+       return(lmres)
+})))
+
+path_lm_summary = path_lm_summary %>% 
+                 mutate("Pathway" = rownames(path_lm_summary),
+                        "adj_pval" = p.adjust(p_value,"BH")) %>%
+                 arrange(desc(t)) %>%
+                 dplyr::filter(p_value<0.1)
+
+dim(path_lm_summary)
+
+path_lm_summary
+```
+
+
+```{r}
+plot(progeny_colon["PI3K",],
+     olaparib_IC50s$logIC50)
+```
+
+#### Comparison with GSEA
+
+```{r}
+enrichment_res_filtered$pathway
+```
+
+
+```{r}
+sort(names(hmarks_gsets)[!names(hmarks_gsets) %in%
+                       enrichment_res_filtered$pathway])
+```
+
+# Carnival
+
+1) What's the use of network contextualization?
+2) Are mechanistic insights worth in the study we are doing?
+
+Be sure to have installed one of the solvers for CARNIVAL to work
+
+#### Get prior knowledge
+
+```{r eval=F}
+## We select interactions for mice
+AllInteractions = import_Omnipath_Interactions()
+
+## We transform to the format needed by CARNIVAL. We just keep signed and 
+## directed interactions 
+SignedDirectedInteractions <- filter(AllInteractions, is_directed==1) %>%
+  filter(is_stimulation ==1 | is_inhibition == 1)
+
+InputCarnival <- bind_rows(
+  (SignedDirectedInteractions %>%
+  filter(is_stimulation == 1 & is_inhibition == 0) %>%
+  transmute(source_genesymbol, interaction = 1, target_genesymbol)),   
+  (SignedDirectedInteractions %>%
+     filter(is_stimulation == 0 & is_inhibition == 1) %>%
+     transmute(source_genesymbol, interaction = -1, target_genesymbol))) %>%  
+  distinct() 
+
+## We have to be careful with the gene names with a "-". CPLEX gets crazy. 
+InputCarnival$source_genesymbol <- 
+  gsub("-","_",InputCarnival$source_genesymbol)
+InputCarnival$target_genesymbol <- 
+  gsub("-","_",InputCarnival$target_genesymbol)
+
+#InputCarnival[,1] = toupper(InputCarnival[,1])
+#InputCarnival[,3] = toupper(InputCarnival[,3])
+
+bad_int = which(duplicated(paste(InputCarnival[,1],InputCarnival[,3])))
+InputCarnival = InputCarnival[-bad_int,]
+
+```
+
+#### Get dorothea results of one cell line
+
+```{r, eval=F}
+most_sensitive = data.frame(t(sort(colon_tfs[,"ACH-000491"])))
+rownames(most_sensitive) = "NES"
+```
+
+#### Run Carnival
+
+```{r, include=F}
+most_sensitive = readRDS("data/dorothea_scores.rds")
+InputCarnival = readRDS("data/input_network.rds")
+```
+
+```{r, eval=F}
+##  We run CARNIVAL for one of the cells
+CarnivalResults = runCARNIVAL(solverPath="/Users/ricardoramirez/Desktop/cplex",
+                                     netObj=InputCarnival,
+                                     measObj=most_sensitive,
+                                     dir_name="Results_CARNIVAL",
+                                     nodeID = 'gene',
+                                     timelimit = 600,
+                                     solver = "cplex")
+
+write.table(CarnivalResults$weightedSIF,col.names = T,row.names = F,
+            sep = ",", file = "data/network_example.csv", quote = F)
+
+write.table(CarnivalResults$nodesAttributes,col.names = T,row.names = F,
+            sep = ",", file = "data/network_example_nodes.csv", quote = F)
+
+saveRDS(CarnivalResults, file = "data/carnival_results.rds")
+```
+
+#### After running carnival...
+
+```{r}
+CarnivalResults = readRDS(file = "data/carnival_results.rds")
+net = data.frame(CarnivalResults$weightedSI,
+                 stringsAsFactors = F)
+nodes = data.frame(CarnivalResults$nodesAttributes,
+                   stringsAsFactors = F) %>% 
+        mutate(act_sign = sign(as.numeric(AvgAct)))
+
+head(net)
+```
+
+```{r}
+head(nodes)
+```
+
+#### Let's make some questions to the network
+
+Are active nodes enriched for a function?
+
+#### Code for hypergeometric test
+
+```{r}
+## Function to perform Hypergeometric Tests for gene set enrichment 
+## Input:
+## geneList = query gene list to enrich
+## Annotation_DB = a list of gene sets to enrich in geneList
+## Output: data frame with results
+
+GSE_analysis = function(geneList,Annotation_DB){
+  
+  geneList = geneList[geneList %in% unique(unlist(Annotation_DB))]
+  
+  ResultsDF = matrix(0,nrow = length(Annotation_DB),ncol = 5)
+  rownames(ResultsDF) = names(Annotation_DB)
+  colnames(ResultsDF) = c("GenesInPathway","GenesInList","GeneNames","p_value","corr_p_value")
+  
+  DB_genecontent = length(unique(unlist(Annotation_DB)))
+  
+  GenesDB = DB_genecontent 
+  SelectedGenes = length(geneList)
+  
+  for(gset in rownames(ResultsDF)){
+    GP = length(Annotation_DB[[gset]])
+    GL = length(intersect(Annotation_DB[[gset]],geneList))
+    
+    ResultsDF[gset,"GenesInList"] = GL
+    ResultsDF[gset,"GenesInPathway"] = GP
+    ResultsDF[gset,"GeneNames"] = paste(intersect(Annotation_DB[[gset]],geneList),collapse = ",")
+    #ResultsDF[gset,"p_value"] = HypergeometricTest(overRepres = TRUE,N = N,K = K,n = n,k = k)
+    ResultsDF[gset,"p_value"] = phyper(q=GL - 1, m=GP, n=GenesDB-GP, k=SelectedGenes, lower.tail = FALSE, log.p = FALSE)
+  }
+  
+  ResultsDF[,"corr_p_value"] = p.adjust(ResultsDF[,"p_value"],method = "BH")
+  ResultsDF = data.frame(ResultsDF,stringsAsFactors = F)
+  ResultsDF = ResultsDF[order(ResultsDF[,"p_value"]),]
+  
+  return(ResultsDF)
+  
+}
+```
+
+```{r}
+active_nodes = nodes %>% filter(act_sign == 1)
+
+#Hypergeometric test
+head(GSE_analysis(geneList = active_nodes[[1]],
+             Annotation_DB = hmarks_gsets))
+```
+
+Are inactive ones?
+
+```{r}
+inactive_nodes = nodes %>% filter(act_sign == -1)
+
+#Hypergeometric test
+head(GSE_analysis(geneList = inactive_nodes[[1]],
+             Annotation_DB = hmarks_gsets))
+```
+
+Are active nodes upregulated?
+
+Are inactive nodes?
+
+```{r}
+
+most_sensitive = data.frame(t(sort(colon_tfs[,"ACH-000491"])))
+rownames(most_sensitive) = "NES"
+
+useful_nodes = nodes %>% filter(act_sign != 0) %>%
+               left_join(lm_summary,
+                         by = c("Node"="gene"))
+
+useful_nodes %>% ggplot(aes(x=factor(act_sign), y = t)) + geom_boxplot()
+
+summary(lm(t ~ factor(act_sign),data = useful_nodes))
+
+```
+
+# Now let's move to cytoscape...
+
+# Session info
+
+```{r sessionInfo, echo=FALSE}
+sessionInfo()
+```
+
+
+
