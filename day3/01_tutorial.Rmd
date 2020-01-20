@@ -3,36 +3,20 @@ title: "CellNOpt tutorial"
 author: "A. Gabor & A. V. Ponce"
 date: "1/16/2020"
 output:
-  html_document:
-    df_print: paged
   pdf_document: 
     toc: yes
+  html_document:
+    df_print: paged
 ---
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
 ```
 
-
-
-
 ## Introduction
 
 The goal of this tutorial is to introduce the CellNOpt framework 
 (Terfve et al 2012) and give some basics in network motifs. 
-
-If you have the following issue:
-
->During startup - Warning messages:
-1: Setting LC_CTYPE failed, using "C"  
-2: Setting LC_COLLATE failed, using "C"  
-3: Setting LC_TIME failed, using "C"  
-4: Setting LC_MESSAGES failed, using "C"  
-5: Setting LC_PAPER failed, using "C"  
-
-evaluate  
-`defaults write org.R-project.R force.LANG en_US.UTF-8`  
-in terminal and then restart RStudio. 
 
 ## CellNOptR
 CellNOpt is a software  
@@ -40,7 +24,7 @@ CellNOpt is a software
 - creates logic-based models of signal transduction networks using logic formalisms
 (Boolean, Fuzzy, or differential equations)
 - combines prior knowledge and perturbation experiments
-- builds an exectuable model to provide predictions or a testable hyposthesis.
+- builds an executable model to provide predictions or a testable hypothesis.
 
 These specific, contextualised models can be used, for example, to 
 understand the different signaling patterns among cell-lines or 
@@ -309,6 +293,11 @@ show the optimised network:
 plotModel(prep_network_Toy,dataToy,bString = ToyT1opt$bString, removeEmptyAnds = F)
 ```
 
-grey links are removed by the optimiser to obtain better fit. 
+Here the edge color encodes if the edge is still included in the optimised 
+subnetwork. Black edge means that the edge is still active in the model, and 
+grey links are removed by the optimiser.
 
 
+## References
+
+> C Terfve, T Cokelaer, A MacNamara, D Henriques, E Goncalves, MK Morris, M van Iersel, DA Lauffenburger, J Saez-Rodriguez. CellNOptR: a flexible toolkit to train protein signaling networks to data using multiple logic formalisms. _BMC Systems Biology_, 2012, 6:133 
