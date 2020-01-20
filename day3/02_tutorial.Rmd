@@ -4,7 +4,7 @@ author: "A. Gabor & A. V. Ponce"
 date: "1/16/2020"
 output:
   html_document:
-    df_print: paged
+    toc: yes
   pdf_document: 
     toc: yes
 ---
@@ -23,7 +23,9 @@ to predict drug response.
 The tutorial is based on the paper 
 
 > Eduati et al (2017) Drug resistance mechanisms in colorectal cancer 
-dissected with cell type-specific dynamic logic models. 
+dissected with cell type-specific dynamic logic models. _Cancer Research_. 
+DOI: 10.1158/0008-5472.CAN-17-0078
+ 
 
 We investigate here the drug-response of colorectal cancer cell lines. For this, we 
 use drug response data and a signaling dataset. 
@@ -115,8 +117,8 @@ The first block outlines the combinations of treatment. Then each other block
 represents the response of a cell line. Different columns within a block shows the 
 different phosphoprotein markers. 
 
-```{r, echo=FALSE, out.width='100%'}
-knitr::include_graphics("./data/tutorial_3/dataHeatmap_raw.png")
+```{r, echo=FALSE, out.width='30%'}
+knitr::include_graphics("./data/tutorial_3/dataHeatmap_raw_zoomed.png")
 ```
 
 In the turial we make a single model for he first cell line _COLO320HSR_. 
@@ -191,6 +193,10 @@ Plot the fit of the model:
 ```{r}
 sim_res <- CNORode::plotLBodeFitness(cnolist,model,ode_parameters = opt_pars)
 ```
+```{r, echo=FALSE, out.width='50%'}
+knitr::include_graphics("./data/tutorial_3/model_fit_zoomed.png")
+```
+
 
 The fit is a bit better than a random model, but these optimisations should be run
 for around 10 hours. 
@@ -233,7 +239,48 @@ The level of edge and node parameters differs across the cell-lines.
 
 
 
-## Associate model parameters and drug response. 
+# PART III: Associate model parameters and drug response
+
+Which model parameters correlates with drug response IC50 ? 
+```{r message=FALSE, warning=FALSE}
+# first we need to remove the parameters, that are zero across all the models
+zero_pars <- names(which(colMeans(optimised_parameters[,-1]) == 0))
+
+# join the IC50 data and network model parameters based on cell_lines
+drug_model_data <- optimised_parameters %>% select(-zero_pars) %>%
+  gather(parameter,par_value,-cell_line) %>%
+  left_join(IC50 %>% gather(drug, IC50,-cell_line),by = "cell_line")
 
 
+# for each drug and each parameter compute the correlation coefficient
+
+corr_data <- drug_model_data %>% group_by(drug, parameter) %>%
+  summarise(corr_par_drug = cor(par_value,IC50,use = "complete.obs"))
+
+```
+
+Let's show some correlation
+```{r}
+corr_data %>% arrange(desc(abs(corr_par_drug))) %>% print(.,n=25)
+```
+
+```{r}
+drug_model_data %>% filter(drug=="Afatinib",parameter=="tau_TBK1") %>%
+  ggplot() + geom_point(aes(par_value,IC50)) + 
+  ggtitle("DRUG: Afatinib; parameter: tau_TBK1")
+```
+Think what the problem might be here?  
+We have only 14 cell-lines, therefore each of the correlations between model 
+parameter and drug IC50 is based on 14 data points. There are 31 drugs and 89 model
+parameters, which results in `31*89=2759` tests. 
+
+Also this is only a single parameter - single drug association. It is possible, that
+the existence of multiple edges makes a cell-line sensitive/resistant. Therefore
+(Eduati et al) derived linear models, that funds multiple parameters at the same 
+time.
+
+
+```{r, out.width='100%'}
+knitr::include_graphics("./data/tutorial_3/Eduatietal_Figure5.png")
+```
 
