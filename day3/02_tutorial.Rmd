@@ -25,10 +25,17 @@ The tutorial is based on the paper
 > Eduati et al (2017) Drug resistance mechanisms in colorectal cancer 
 dissected with cell type-specific dynamic logic models. _Cancer Research_. 
 DOI: 10.1158/0008-5472.CAN-17-0078
- 
 
+On Github: https://github.com/saezlab/CRC-pathway-biomarkers
+ 
 We investigate here the drug-response of colorectal cancer cell lines. For this, we 
 use drug response data and a signaling dataset. 
+
+
+```{r,  out.width='100%'}
+knitr::include_graphics("./data/tutorial_3/Eduatietal_Figure1.png")
+```
+
 
 The Genomics of Drug Sensitivity in Cancer (GDSC), https://www.cancerrxgene.org/
 offers drug response data for more than a 1000 human cancer cell lines, for houndreds of 
@@ -40,7 +47,7 @@ perturbation conditions (5 stimuli, 7 inhibitors).
 
 First, we construct signaling models based on the perturbation data to the cell
 lines, here we use the CNORode modelling package. 
-In the next step, we will associate model feratures to drug response to see why certain cell lines
+In the next step, we will associate model features to drug response to see why certain cell lines
 respond to certain drugs and others do not. Here we use a linear modeling framework. 
 
 ## CNORode
@@ -109,7 +116,38 @@ Afatinib than any other cell lines. What could be the reason for this?
 
 
 # PART II: cell-line models
-The goal of part II is to build a cell-line specific model from the perturbation data
+The goal of part II is to build a cell-line specific model from the perturbation
+data using CNORode.
+
+This model is an ordinary differential equation (ODE) model, where the equation for
+each state ($x_A$) can be written as 
+$$\frac{dx_A}{dt} = \tau_A(B(f_1(x),f_2(x),...)-x_A) $$
+here
+
+- $f_i(x)$ represents the incoming edges on node $A$ with a transfer function. 
+This transfer function typically has an S-shape. 
+$$ f(x) = \frac{x^n}{x^n+k^n}$$
+
+- $B$ is a Boolean homologue function. This is responsible to combine the incoming
+edges with the OR and AND gates. For example, an OR gate is represented by $x_1\cdot x_2$.
+- $\tau$ is a time parameter, that tells how fast node A adapts to the input.
+- the model has free parameters: a $\tau$ for each node, and ($k$,$n$) for each edge. These
+are found by optimisation. 
+
+
+The main differences are that in ODE models the states are continuous values, therefore
+it is quantitative, not only qualitative like a Boolean model. Further, here
+we hace to find the specific edge and node parameters. 
+
+What do we need to build and simulate a differential equation model? 
+
+- the equations are derived from the network graph
+- inputs: given in the MIDAS description
+- Initial conditions for each state in each experiment 
+
+In this example, the baseline is set to 0.5. A value of 1 means full activation 
+and 0 means full inhibition of the node. 
+
 
 ## Perturbation data
 The following heatmap shows an overview on the perturbation data. 
@@ -117,13 +155,25 @@ The first block outlines the combinations of treatment. Then each other block
 represents the response of a cell line. Different columns within a block shows the 
 different phosphoprotein markers. 
 
+
+```{r, echo=FALSE, out.width='100%'}
+knitr::include_graphics("./data/tutorial_3/dataHeatmap_raw.png")
+```
+
+In the tutorial we make a single model for the first cell line _COLO320HSR_. 
+
 ```{r, echo=FALSE, out.width='30%'}
 knitr::include_graphics("./data/tutorial_3/dataHeatmap_raw_zoomed.png")
 ```
 
-In the turial we make a single model for he first cell line _COLO320HSR_. 
 
-## Model of a single cell line
+
+## Model a single cell line
+
+Similarly to the previous tutorial with CellNopt, here we also start by importing 
+a prior knowledge network and the perturbation data in MIDAS format.
+
+
 ```{r}
 # load Prior Knowledge Network (PKN)
 pknmodel<-readSIF("./data/tutorial_3/PKN.sif")
@@ -132,7 +182,7 @@ pknmodel<-readSIF("./data/tutorial_3/PKN.sif")
 # select MIDAS file for the desired cell line
 MIDASfile <- "./data/tutorial_3/processed/MIDAS/MD-COLO320HSR_Ktuned_v1_n4_all_noEGFRi_CNORode.csv"
 
-Mydata<-readMIDAS(MIDASfile=MIDASfile)
+Mydata<-readMIDAS(MIDASfile=MIDASfile,verbose = FALSE)
 cnolist<-makeCNOlist(Mydata, subfield=F)
 cnolist$valueStimuli[cnolist$valueStimuli==0]=0.5
 ```
@@ -142,11 +192,23 @@ Show the network first
 plotModel(pknmodel,cnolist)
 ```
 
+As in CellNOPt:
+
+- green nodes are stimulated in some experiments
+- blue nodes are measured
+- white nodes are modelled, but not measured
+- red nodes or red bordered nodes are occasionally inhibited
+- black edges represents activation, red T-shaped arrows represents inhibition
+
 
 Then the data in CellNOpt format: 
 ```{r}
 plotCNOlist(cnolist)
 ```
+
+The data is very large, therefore is hard to see the details, but we can notice as 
+some nodes increases their activity at the final time (30 mins). 
+
 
 ```{r}
 # compress the network (no expansion, only OR gates are considered)
@@ -163,10 +225,12 @@ ode_parameters <- createLBodeContPars(model,
                                       random = TRUE)
 
 # PLX -> BRAF is an artificial regulation used to model paradoxical effect of PLX4720,
-# which works as selective BRAF inhibitor in cell-lines where BRAF is mutated in V600E (i.e. HT29 and SNUC5 in our panel),
-# but induces a paradoxical activation of wild type BRAF cells (modeled as stimulus on those cell lines)
+# which works as selective BRAF inhibitor in cell-lines where BRAF is mutated in
+# V600E (i.e. HT29 and SNUC5 in our panel), but induces a paradoxical activation
+# of wild type BRAF cells (modeled as stimulus on those cell lines)
 ode_parameters$parValues[which(ode_parameters$parNames=="PLX_k_BRAF")]<-0.5
-ode_parameters$index_opt_pars<-setdiff(ode_parameters$index_opt_pars, which(ode_parameters$parNames=="PLX_k_BRAF"))
+ode_parameters$index_opt_pars<- setdiff(ode_parameters$index_opt_pars,
+                                        which(ode_parameters$parNames=="PLX_k_BRAF"))
 
 ## Parameter Optimization
 # essm
@@ -178,6 +242,7 @@ paramsSSm$transfer_function = 4;
 
 The actual optimisation takes around 10 mins, instead of the 30 sec. 
 So, instead of running it here, we just load the results: 
+
 ```{r, eval=FALSE}
 opt_pars = parEstimationLBode(cnolist, model, method="essm",
                               ode_parameters=ode_parameters,
@@ -189,7 +254,9 @@ opt_pars = parEstimationLBode(cnolist, model, method="essm",
 opt_pars <- read_rds("data/tutorial_3/opt_pars_30sec.RDS")
 
 ```
+
 Plot the fit of the model: 
+
 ```{r}
 sim_res <- CNORode::plotLBodeFitness(cnolist,model,ode_parameters = opt_pars)
 ```
@@ -197,11 +264,11 @@ sim_res <- CNORode::plotLBodeFitness(cnolist,model,ode_parameters = opt_pars)
 knitr::include_graphics("./data/tutorial_3/model_fit_zoomed.png")
 ```
 
-
 The fit is a bit better than a random model, but these optimisations should be run
 for around 10 hours. 
 
-The optimised parameters for this cell line
+We are interested in the optimised model parameters of this model. 
+
 ```{r}
 opt_par_values <- opt_pars$parValues
 names(opt_par_values) <- opt_pars$parNames
@@ -269,6 +336,7 @@ drug_model_data %>% filter(drug=="Afatinib",parameter=="tau_TBK1") %>%
   ggplot() + geom_point(aes(par_value,IC50)) + 
   ggtitle("DRUG: Afatinib; parameter: tau_TBK1")
 ```
+
 Think what the problem might be here?  
 We have only 14 cell-lines, therefore each of the correlations between model 
 parameter and drug IC50 is based on 14 data points. There are 31 drugs and 89 model
